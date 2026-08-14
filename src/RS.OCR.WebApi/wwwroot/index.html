@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RS.OCR - 可视化测试</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Segoe UI,sans-serif;background:#1a1a2e;color:#eee;min-height:100vh}
+.header{background:#16213e;padding:12px 24px;display:flex;align-items:center;gap:16px}
+.header h1{font-size:20px;color:#e94560}
+.header span{color:#999;font-size:13px}
+.header .links{margin-left:auto;display:flex;gap:10px}
+.header .links a{color:#888;text-decoration:none;font-size:12px;padding:4px 10px;border:1px solid #333;border-radius:4px;transition:all .2s}
+.header .links a:hover{color:#e94560;border-color:#e94560}
+.main{display:flex;gap:16px;padding:16px;height:calc(100vh - 70px)}
+.panel{background:#16213e;border-radius:8px;padding:16px}
+.left{width:340px;flex-shrink:0;display:flex;flex-direction:column;gap:10px;overflow-y:auto}
+.right{flex:1;display:flex;flex-direction:column;gap:12px}
+.preview-wrap{flex:1;background:#0f0f1a;border-radius:8px;overflow:hidden;position:relative}
+.preview-inner{position:absolute;inset:0;overflow:hidden;cursor:grab}
+.preview-inner.dragging{cursor:grabbing}
+.preview-inner canvas{position:absolute;left:50%;top:50%}
+.preview .placeholder{color:#555;font-size:14px;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}
+.zoom-hint{position:absolute;bottom:8px;right:12px;background:rgba(0,0,0,.6);color:#888;font-size:11px;padding:3px 8px;border-radius:4px;pointer-events:none}
+.result-panel{height:260px;overflow-y:auto;background:#0f0f1a;border-radius:8px;padding:12px}
+.result-panel pre{font-size:12px;color:#a0d995;white-space:pre-wrap;word-break:break-all;margin:0}
+.upload-zone{border:2px dashed #333;border-radius:8px;padding:28px 16px;text-align:center;cursor:pointer;transition:all .2s}
+.upload-zone:hover{border-color:#e94560}
+.upload-zone.drag{border-color:#e94560;background:rgba(233,69,96,.1)}
+.upload-zone img{max-width:100%;max-height:140px;display:none;margin:0 auto}
+.upload-zone p{color:#777;font-size:13px;margin-top:8px}
+.btn{background:#e94560;color:#fff;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;width:100%;transition:opacity .2s}
+.btn:hover{opacity:.85}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-sm{padding:6px 14px;font-size:12px}
+.btn-outline{background:transparent;border:1px solid #e94560;color:#e94560}
+.tabs{display:flex;gap:4px}
+.tab{flex:1;padding:8px 4px;text-align:center;background:#1a1a2e;border:1px solid #333;color:#888;cursor:pointer;font-size:11px;border-radius:4px 4px 0 0;transition:all .2s}
+.tab.active{background:#e94560;color:#fff;border-color:#e94560}
+.base64-area{width:100%;height:80px;background:#0f0f1a;border:1px solid #333;color:#ccc;font-size:12px;padding:8px;border-radius:4px;resize:vertical;font-family:monospace}
+.row{display:flex;gap:8px}
+.row .btn{flex:1}
+.stats{display:flex;gap:12px;font-size:12px;color:#888}
+.stats span{color:#a0d995}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>RS.OCR</h1>
+  <span>By LiJianPeng</span>
+  <div class="links">
+    <a href="/swagger" target="_blank">Swagger API</a>
+    <a href="/index.html">可视化测试</a>
+  </div>
+</div>
+<div class="main">
+  <div class="panel left">
+    <div class="tabs">
+      <div class="tab active" data-api="RecognizeText">文字 · 文件</div>
+      <div class="tab" data-api="RecognizeTextBase64">文字 · Base64</div>
+      <div class="tab" data-api="RecognizeTable">表格 · 文件</div>
+      <div class="tab" data-api="RecognizeTableBase64">表格 · Base64</div>
+    </div>
+    <div class="upload-zone" id="uploadZone">
+      <img id="previewImg" alt="preview" />
+      <p>点击上传图片 或 Ctrl+V 粘贴</p>
+    </div>
+    <textarea class="base64-area" id="base64Input" placeholder="粘贴 Base64 字符串（不含前缀）" style="display:none"></textarea>
+    <div class="row">
+      <button class="btn btn-outline btn-sm" onclick="pasteFromClipboard()">📋 粘贴图片</button>
+      <button class="btn btn-outline btn-sm" onclick="clearAll()">✕ 清空</button>
+    </div>
+    <div class="stats">
+      <span id="imgSize">-</span>
+      <span id="elapsed">-</span>
+    </div>
+    <button class="btn" id="submitBtn" onclick="submit()">开始识别</button>
+  </div>
+  <div class="right">
+    <div class="preview-wrap">
+      <div class="preview-inner" id="previewInner">
+        <canvas id="canvas"></canvas>
+        <span class="placeholder" id="placeholder">等待上传图片...</span>
+        <span class="zoom-hint" id="zoomHint">100%</span>
+      </div>
+    </div>
+    <div class="result-panel">
+      <pre id="result">等待识别结果...</pre>
+    </div>
+  </div>
+</div>
+<input type="file" id="fileInput" accept="image/*" hidden />
+
+<script>
+const API = '';
+let currentApi = 'RecognizeText';
+let imageDataUrl = null;
+let imageFile = null;
+let ocrResult = null;
+let imgNaturalW = 0, imgNaturalH = 0, baseScale = 1, zoomLevel = 100;
+let panX = 0, panY = 0, isDragging = false, dragStartX = 0, dragStartY = 0, dragPanX = 0, dragPanY = 0;
+
+// ── Tab ──
+document.querySelectorAll('.tab').forEach(t => {
+  t.onclick = () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    currentApi = t.dataset.api;
+    const isB64 = currentApi.includes('Base64');
+    document.getElementById('uploadZone').style.display = isB64 ? 'none' : '';
+    document.getElementById('base64Input').style.display = isB64 ? '' : 'none';
+  };
+});
+
+// ── 上传 ──
+const zone = document.getElementById('uploadZone');
+zone.onclick = () => document.getElementById('fileInput').click();
+zone.ondragover = e => { e.preventDefault(); zone.classList.add('drag'); };
+zone.ondragleave = () => zone.classList.remove('drag');
+zone.ondrop = e => { e.preventDefault(); zone.classList.remove('drag'); loadFile(e.dataTransfer.files[0]); };
+document.getElementById('fileInput').onchange = e => { if(e.target.files[0]) loadFile(e.target.files[0]); };
+document.addEventListener('paste', e => {
+  for (const item of e.clipboardData?.items||[]) { if(item.type.startsWith('image/')){loadFile(item.getAsFile());break} }
+});
+
+function loadFile(file) {
+  if (!file) return;
+  imageFile = file;
+  const r = new FileReader();
+  r.onload = e => {
+    imageDataUrl = e.target.result;
+    document.getElementById('previewImg').src = imageDataUrl;
+    document.getElementById('previewImg').style.display = 'block';
+    zone.querySelector('p').style.display = 'none';
+    document.getElementById('imgSize').textContent = `${file.name} (${(file.size/1024).toFixed(0)}KB)`;
+    applyZoom(100);
+  };
+  r.readAsDataURL(file);
+}
+
+function clearAll() {
+  imageFile = null; imageDataUrl = null; ocrResult = null;
+  document.getElementById('previewImg').style.display = 'none';
+  zone.querySelector('p').style.display = '';
+  document.getElementById('base64Input').value = '';
+  document.getElementById('result').textContent = '等待识别结果...';
+  document.getElementById('imgSize').textContent = '-';
+  document.getElementById('elapsed').textContent = '-';
+  document.getElementById('placeholder').style.display = '';
+  document.getElementById('zoomHint').textContent = '100%';
+  panX = 0; panY = 0;
+  const c = document.getElementById('canvas'); c.width = c.height = 0;
+}
+
+// ── 缩放（鼠标滚轮）──
+function applyZoom(v, resetPan) {
+  zoomLevel = Math.max(20, Math.min(400, Number(v)));
+  document.getElementById('zoomHint').textContent = zoomLevel+'%';
+  if (resetPan) { panX = 0; panY = 0; }
+  drawImage();
+}
+
+document.getElementById('previewInner').addEventListener('wheel', e => {
+  e.preventDefault();
+  applyZoom(zoomLevel + (e.deltaY > 0 ? -15 : 15));
+}, { passive: false });
+
+document.getElementById('previewInner').addEventListener('dblclick', () => applyZoom(100, true));
+
+// ── 拖拽平移 ──
+const previewInner = document.getElementById('previewInner');
+previewInner.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  isDragging = true;
+  dragStartX = e.clientX; dragStartY = e.clientY;
+  dragPanX = panX; dragPanY = panY;
+  previewInner.classList.add('dragging');
+});
+window.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  panX = dragPanX + (e.clientX - dragStartX);
+  panY = dragPanY + (e.clientY - dragStartY);
+  drawImage();
+});
+window.addEventListener('mouseup', () => {
+  isDragging = false;
+  previewInner.classList.remove('dragging');
+});
+
+// ── 画图 ──
+function drawImage() {
+  if (!imageDataUrl) { document.getElementById('placeholder').style.display = ''; return; }
+  document.getElementById('placeholder').style.display = 'none';
+  const img = new Image();
+  img.onload = () => {
+    imgNaturalW = img.width; imgNaturalH = img.height;
+    const wrap = document.getElementById('previewInner');
+    const scale = Math.min(wrap.clientWidth/img.width, wrap.clientHeight/img.height, 1) * (zoomLevel/100);
+    baseScale = scale;
+    const c = document.getElementById('canvas');
+    c.width = img.width * scale;
+    c.height = img.height * scale;
+    c.style.transform = `translate(calc(-50% + ${panX}px), calc(-50% + ${panY}px))`;
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+
+    // 文字框
+    const blocks = ocrResult?.blocks || [];
+    blocks.forEach(b => drawBox(ctx, b.box, b.text, '#e94560', scale));
+
+    // 表格单元格（有宽高画框，否则画点，跳过占位格）
+    const rows = ocrResult?.rows || [];
+    rows.forEach(row => row.cells?.forEach(cell => {
+      if (!(cell.x > 0 || cell.y > 0 || cell.text)) return;
+      if (cell.w > 0 && cell.h > 0) drawCellBox(ctx, cell, scale);
+      else drawDot(ctx, cell.x, cell.y, cell.text||'', scale);
+    }));
+  };
+  img.src = imageDataUrl;
+}
+
+function drawBox(ctx, b, text, color, scale) {
+  if (!b || b.length < 4) return;
+  ctx.strokeStyle = color; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(b[0].x*scale, b[0].y*scale);
+  for(let i=1;i<b.length;i++) ctx.lineTo(b[i].x*scale, b[i].y*scale);
+  ctx.closePath(); ctx.stroke();
+  const t = (text||'').substring(0,20);
+  ctx.fillStyle = 'rgba(233,69,96,0.85)';
+  const tw = ctx.measureText(t).width + 8;
+  ctx.fillRect(b[0].x*scale, b[0].y*scale-18, tw, 18);
+  ctx.fillStyle = '#fff'; ctx.font = '12px Segoe UI';
+  ctx.fillText(t, b[0].x*scale+4, b[0].y*scale-4);
+}
+
+function drawDot(ctx, x, y, text, scale) {
+  const sx = x*scale, sy = y*scale, r = 5;
+  ctx.fillStyle = '#4ade80';
+  ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = '11px Segoe UI';
+  ctx.fillText((text||'').substring(0,6), sx+8, sy+4);
+}
+
+function drawCellBox(ctx, cell, scale) {
+  const x = cell.x * scale, y = cell.y * scale;
+  const w = cell.w * scale, h = cell.h * scale;
+  ctx.strokeStyle = '#4ade80'; ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, w, h);
+  const t = (cell.text||'').substring(0,20);
+  ctx.fillStyle = 'rgba(74,222,128,0.85)';
+  const tw = ctx.measureText(t).width + 8;
+  ctx.fillRect(x, y - 18, tw, 18);
+  ctx.fillStyle = '#fff'; ctx.font = '12px Segoe UI';
+  ctx.fillText(t, x + 4, y - 4);
+}
+
+// ── 提交 ──
+async function submit() {
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true; btn.textContent = '识别中...';
+  const el = document.getElementById('elapsed'); el.textContent = '处理中...';
+  try {
+    let url = `${API}/api/ocr/${currentApi}`, resp;
+    if (currentApi.includes('Base64')) {
+      let b64 = document.getElementById('base64Input').value.trim();
+      if (!b64 && imageDataUrl) b64 = imageDataUrl.split(',')[1];
+      if (!b64) { alert('请提供 Base64 数据'); return; }
+      resp = await fetch(url, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageBase64:b64})});
+    } else {
+      if (!imageFile) { alert('请先上传图片'); return; }
+      const fd = new FormData(); fd.append('file', imageFile);
+      resp = await fetch(url, {method:'POST',body:fd});
+    }
+    ocrResult = await resp.json();
+    document.getElementById('result').textContent = JSON.stringify(ocrResult, null, 2);
+    el.textContent = ocrResult.elapsedMs ? `${ocrResult.elapsedMs}ms` : '-';
+    drawImage();
+  } catch(e) {
+    document.getElementById('result').textContent = `请求失败: ${e.message}`;
+    el.textContent = '失败';
+  }
+  btn.disabled = false; btn.textContent = '开始识别';
+}
+
+window.addEventListener('resize', drawImage);
+</script>
+</body>
+</html>

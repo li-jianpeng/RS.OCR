@@ -1,0 +1,2 @@
+[permissions]
+allow = ["explore", "Bash=dotnet --version 2>&1 | head -5", "Edit", "Bash=cd \"D:/资料/学习程序/RS.OCR\" && dotnet build RS.OCR.sln -v q --nologo 2>&1 | tail -20"]
